@@ -627,6 +627,52 @@ class SineVCO(VCO):
     Simple VCO that generates a pitched sinusoid.
     """
 
+    def output(self, midi_f0: T = None, freq: T = None, mod_signal: Optional[Signal] = None) -> Signal:
+        """
+        Generates audio signal from modulation signal.
+
+        Args:
+            midi_f0: Fundamental of note in midi note value (0-127).
+            mod_signal: Modulation signal to apply to the pitch.
+        """
+        if freq is not None:
+            assert freq.shape == (self.batch_size,)
+        elif midi_f0 is not None:
+            assert midi_f0.shape == (self.batch_size,)
+        else:
+            raise ValueError(
+                "Expected either midi_f0 or freq argument for the VCO"
+            )
+
+        if mod_signal is not None and mod_signal.shape != (
+            self.batch_size,
+            self.buffer_size,
+        ):
+            raise ValueError(
+                "mod_signal has incorrect shape. Expected "
+                f"{torch.Size([self.batch_size, self.buffer_size])}, "
+                f"and received {mod_signal.shape}. Make sure the mod_signal "
+                "being passed in is at full audio sampling rate."
+            )
+
+        if freq is not None:
+            control_as_frequency = torch.nn.Upsample(self.synthconfig.buffer_size, mode="linear", align_corners=True)(
+                freq.reshape((1, self.batch_size, 1))
+            )
+            control_as_frequency = control_as_frequency[0]
+        else:
+            control_as_frequency = self.make_control_as_frequency(midi_f0, mod_signal)
+
+        if self.synthconfig.debug:
+            assert (control_as_frequency >= 0).all() and (
+                control_as_frequency <= self.nyquist
+            ).all()
+
+        cosine_argument = self.make_argument(control_as_frequency)
+        cosine_argument += self.p("initial_phase").unsqueeze(1)
+        output = self.oscillator(cosine_argument, midi_f0)
+        return output.as_subclass(Signal)
+
     def oscillator(self, argument: Signal, midi_f0: T) -> Signal:
         """
         A cosine oscillator. ...Good ol' cosine.
